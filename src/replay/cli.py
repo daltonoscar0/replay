@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -44,9 +44,9 @@ def track(
     weights: Annotated[str, typer.Option(help="YOLO weights.")] = "yolov8n.pt",
     conf: Annotated[float, typer.Option(help="Detection confidence floor.")] = 0.25,
     stride: Annotated[int, typer.Option(help="Process every Nth frame.")] = 1,
-    max_frames: Annotated[Optional[int], typer.Option(help="Stop after N frames.")] = None,
+    max_frames: Annotated[int | None, typer.Option(help="Stop after N frames.")] = None,
     homography: Annotated[
-        Optional[Path], typer.Option(help="Calibration JSON; skips estimation.")
+        Path | None, typer.Option(help="Calibration JSON; skips estimation.")
     ] = None,
     match_id: Annotated[str, typer.Option(help="match_id written into the CSV.")] = "match",
     canonical: Annotated[
@@ -97,7 +97,7 @@ def overlay(
     video: Annotated[Path, typer.Argument(help="Source video.")],
     tracks: Annotated[Path, typer.Argument(help="Tracking CSV from `replay track`.")],
     out: Annotated[Path, typer.Option("--out", help="Output video.")] = Path("overlay.mp4"),
-    homography: Annotated[Optional[Path], typer.Option(help="Calibration JSON.")] = None,
+    homography: Annotated[Path | None, typer.Option(help="Calibration JSON.")] = None,
     minimap: Annotated[bool, typer.Option(help="Draw the pitch minimap inset.")] = True,
 ) -> None:
     """Render tracked positions back onto the source video."""
@@ -116,8 +116,8 @@ def eval_cmd(
     dataset: Annotated[
         str, typer.Option("--dataset", help="soccernet-test | demo | <path to gt csv>")
     ] = "demo",
-    pred: Annotated[Optional[Path], typer.Option(help="Predicted tracking CSV.")] = None,
-    gt: Annotated[Optional[Path], typer.Option(help="Ground-truth tracking CSV.")] = None,
+    pred: Annotated[Path | None, typer.Option(help="Predicted tracking CSV.")] = None,
+    gt: Annotated[Path | None, typer.Option(help="Ground-truth tracking CSV.")] = None,
     write_readme: Annotated[
         bool, typer.Option(help="Splice the table into the README accuracy section.")
     ] = False,
@@ -218,8 +218,8 @@ def _demo_report(evaluate):  # noqa: ANN001, ANN202
 @sim_app.callback(invoke_without_command=True)
 def sim(
     ctx: typer.Context,
-    tracks: Annotated[Optional[Path], typer.Argument(help="Tracking CSV.")] = None,
-    scenario: Annotated[Optional[Path], typer.Option("--scenario", help="Scenario YAML.")] = None,
+    tracks: Annotated[Path | None, typer.Argument(help="Tracking CSV.")] = None,
+    scenario: Annotated[Path | None, typer.Option("--scenario", help="Scenario YAML.")] = None,
     out_dir: Annotated[Path, typer.Option("--out-dir", help="Where to write outputs.")] = Path(
         "out"
     ),

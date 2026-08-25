@@ -8,7 +8,7 @@ homography, or re-run team assignment without redoing the expensive parts.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -83,7 +83,9 @@ class VideoReader:
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self._cache: dict[int, np.ndarray] = {}
 
-    def frames(self, *, stride: int = 1, limit: int | None = None):
+    def frames(
+        self, *, stride: int = 1, limit: int | None = None
+    ) -> Iterator[tuple[int, np.ndarray]]:
         """Yield `(frame_index, image)` for every `stride`-th frame."""
         idx = 0
         emitted = 0

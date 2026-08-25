@@ -1,0 +1,49 @@
+# Press higher: what happens if the defending block starts 1.5 m further up?
+#
+# The classic post-match question. Everything except the defensive line is left
+# at the baseline, so the delta table run_scenario prints is attributable to the
+# line height and nothing else.
+
+name: press_higher
+description: >-
+  Push the defending block 1.5 m higher and trigger the press a little earlier,
+  holding shape and passing-lane priority at the baseline.
+
+initial_state:
+  # "auto" means: take the tracking file given on the command line and pick a
+  # sensible frame from it. Use an explicit file plus a frame number instead
+  # when you want the same start every time:
+  #   source: data/derby.csv
+  #   frame: 4120
+  source: auto
+
+policy:
+  # "rule_based" is the hand-written policy; "bc" loads a behaviour-cloned
+  # policy and needs a `weights:` path alongside it.
+  kind: rule_based
+
+  # Meters to shift the defending block's resting depth up the pitch. Positive
+  # is higher (towards the opponent's goal), negative drops it deeper.
+  defensive_line: 1.5
+
+  # Distance from a defender to the ball, in meters, at which that defender
+  # commits to closing the carrier down. Lower is more passive.
+  press_trigger_m: 10.0
+
+  # How hard the block squeezes towards its own centroid. 1.0 is the baseline
+  # shape, higher is narrower and more compact, 0 turns the term off.
+  line_compactness: 1.0
+
+  # Relative weight on standing in passing lanes versus chasing the carrier.
+  # 1.0 is the baseline balance.
+  pass_lane_weight: 1.0
+
+# Simulated seconds per rollout.
+horizon_s: 10.0
+
+# How many rollouts to average. More rollouts, tighter confidence interval,
+# longer run.
+n_rollouts: 32
+
+# Fixed seed so the same scenario file always produces the same numbers.
+seed: 0
