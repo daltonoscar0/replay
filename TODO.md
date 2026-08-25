@@ -33,6 +33,14 @@ that is not available offline.
   `REPLAY_NETWORK_TESTS=1`. Nothing in the tracker has been run against real
   broadcast video.
 
+- **`pressing` compatibility check** — *blocked*. The build sequence calls for
+  verifying that `replay track` output feeds the suite's `pressing` tool, but
+  `pressing` does not exist yet. What stands in for it: the writer emits the
+  canonical `tracking` schema from `00_SPORTIO.md` (`replay/schema.py`,
+  `TRACKING_COLUMNS`), which is the interface `pressing` is specified to
+  consume, and `to_metrica`/`from_metrica` round-trip is tested. Run the actual
+  check once `pressing` lands.
+
 ## Known gaps
 
 - **`sportio` is not installed**, so `replay.io._adapter` runs the vendored
