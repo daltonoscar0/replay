@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# cached downloads and model weights
+data/raw/
+data/cache/
+weights/
+*.pt
+
+# run outputs
+out/
+*.mp4
+!demo/assets/*.mp4
+*.gif
+!demo/expected/*.gif
+
+.DS_Store
