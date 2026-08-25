@@ -17,7 +17,6 @@ app = typer.Typer(
     no_args_is_help=True,
     help="Broadcast-to-tracking converter and tactical sandbox.",
 )
-sim_app = typer.Typer(no_args_is_help=True, help="Tactical simulation.")
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -153,6 +152,13 @@ def _collect_reports(dataset: str, pred: Path | None, gt: Path | None, evaluate)
     if dataset == "demo":
         return [_demo_report(evaluate)]
 
+    if dataset == "all":
+        # Every dataset the table is meant to cover, including the ones that
+        # could not be run. A row saying "not run" is the honest output; a table
+        # that quietly contains only what happened to work reads as a clean
+        # sweep.
+        return [_demo_report(evaluate), *_collect_reports("soccernet-test", pred, gt, evaluate)]
+
     if dataset.startswith("soccernet"):
         try:
             gt_df = load_soccernet_gt(Path("data/raw/soccernet"))
@@ -215,22 +221,16 @@ def _demo_report(evaluate):  # noqa: ANN001, ANN202
     return rep
 
 
-@sim_app.callback(invoke_without_command=True)
+@app.command()
 def sim(
-    ctx: typer.Context,
-    tracks: Annotated[Path | None, typer.Argument(help="Tracking CSV.")] = None,
-    scenario: Annotated[Path | None, typer.Option("--scenario", help="Scenario YAML.")] = None,
+    tracks: Annotated[Path, typer.Argument(help="Tracking CSV.")],
+    scenario: Annotated[Path, typer.Option("--scenario", help="Scenario YAML.")],
     out_dir: Annotated[Path, typer.Option("--out-dir", help="Where to write outputs.")] = Path(
         "out"
     ),
     gif: Annotated[bool, typer.Option(help="Render a GIF of rollout 0.")] = True,
 ) -> None:
     """Run a tactical counterfactual against a tracking file."""
-    if ctx.invoked_subcommand is not None:
-        return
-    if tracks is None or scenario is None:
-        raise typer.BadParameter("usage: replay sim TRACKS --scenario SCENARIO.yaml")
-
     from replay.io import from_metrica
     from replay.sim.calibrate import calibration_report
     from replay.sim.render import render_rollout_gif
@@ -242,19 +242,18 @@ def sim(
     result = run_scenario(df, scn)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    typer.echo(result.delta_table.to_string(index=False))
-    result.delta_table.to_csv(out_dir / "deltas.csv", index=False)
+    typer.echo(result.deltas.to_string(index=False))
+    result.deltas.to_csv(out_dir / "deltas.csv", index=False)
 
-    cal = calibration_report(result.metrics, df)
+    # calibrate compares simulated *tracking* against the source file,
+    # not the per-rollout metrics table.
+    cal = calibration_report(result.to_tracking(), df)
     typer.echo("")
     typer.echo(cal.format())
 
     if gif:
-        path = render_rollout_gif(result.rollout_states, out_dir / "rollout.gif")
+        path = render_rollout_gif(result.states, out_dir / "rollout.gif")
         typer.echo(f"wrote {path}")
-
-
-app.add_typer(sim_app, name="sim")
 
 
 @app.command()
@@ -309,10 +308,20 @@ def demo(
 
     typer.echo("[4/4] simulating a higher defensive line")
     scn = load_scenario(Path("scenarios/press_higher.yaml"))
-    sim_result = run_scenario(result.tracks if not result.tracks.empty else gt_df, scn)
-    typer.echo(sim_result.delta_table.to_string(index=False))
-    gif_path = render_rollout_gif(sim_result.rollout_states, out_dir / "rollout.gif")
+    source_tracks = result.tracks if not result.tracks.empty else gt_df
+    sim_result = run_scenario(source_tracks, scn)
+    typer.echo(sim_result.deltas.to_string(index=False))
+    gif_path = render_rollout_gif(sim_result.states, out_dir / "rollout.gif")
     typer.echo(f"      -> {gif_path}")
+
+    # The calibration verdict belongs in the demo, not just in `replay sim`.
+    # This is the one command anyone runs on a fresh clone, and a sandbox whose
+    # possession churn is out of tolerance should say so there rather than let
+    # the delta table imply the numbers can be taken at face value.
+    from replay.sim.calibrate import calibration_report
+
+    typer.echo("")
+    typer.echo(calibration_report(sim_result.to_tracking(), source_tracks).format())
 
     typer.echo(f"\ndone. outputs in {out_dir}")
 

@@ -14,6 +14,7 @@ hand one player's trajectory to another.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -187,20 +188,29 @@ def build_roster(df: pd.DataFrame, *, match_id: str | None = None) -> dict[str, 
     work = df if match_id is None else df[df["match_id"] == match_id]
     roster: dict[str, list[str]] = {}
     for team in ("home", "away"):
-        uniq = work.loc[work["team"] == team, ["player_id", "jersey"]].drop_duplicates()
+        side = work.loc[work["team"] == team, ["player_id", "jersey"]]
         entries: dict[str, float] = {}
-        for player_id, jersey in zip(uniq["player_id"], uniq["jersey"], strict=True):
+        seen: Counter[str] = Counter()
+        for player_id, jersey in zip(side["player_id"], side["jersey"], strict=True):
             key = _player_key(player_id, jersey)
             if key is None:
                 continue
             entries.setdefault(key, float(jersey) if pd.notna(jersey) else float("inf"))
-        ordered = sorted(entries, key=lambda k: (entries[k], k))
+            seen[key] += 1
+        # Jersey first, because a file that carries numbers means them. Tracker
+        # output carries none, and then every entry ties at infinity: falling
+        # back to the id string would rank by an arbitrary label and let a
+        # two-frame fragment take a slot from a player tracked all match. Row
+        # count is the tiebreak that actually says which identities are real.
+        ordered = sorted(entries, key=lambda k: (entries[k], -seen[k], k))
         if len(ordered) > N_PLAYERS_PER_TEAM:
+            unnumbered = all(not np.isfinite(v) for v in entries.values())
             log.warning(
-                "%s has %d distinct players; keeping the %d lowest jerseys (%s dropped)",
+                "%s has %d distinct players; keeping the %d %s (%s dropped)",
                 team,
                 len(ordered),
                 N_PLAYERS_PER_TEAM,
+                "most-tracked" if unnumbered else "lowest jerseys",
                 ", ".join(ordered[N_PLAYERS_PER_TEAM:]),
             )
             ordered = ordered[:N_PLAYERS_PER_TEAM]

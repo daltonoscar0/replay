@@ -176,12 +176,37 @@ def _resolve_frame(tracking: pd.DataFrame, scenario: Any) -> int:
     frame = getattr(init, "frame", None)
     if frame is None and isinstance(init, dict):
         frame = init.get("frame")
-    if frame is None:
-        frames = tracking["frame"].to_numpy()
-        if frames.size == 0:
-            raise ValueError("tracking frame is empty; nothing to start a rollout from")
+    if frame is not None:
+        return int(frame)
+
+    frames = tracking["frame"].to_numpy()
+    if frames.size == 0:
+        raise ValueError("tracking frame is empty; nothing to start a rollout from")
+
+    # "auto" means "pick a sensible frame", and the first frame is rarely one:
+    # a tracker needs a few frames to confirm anything, so the opening of a file
+    # is exactly where the roster is thinnest and the ball most often missing.
+    # Score each frame by whether it has a ball and how many players it has, and
+    # take the earliest of the best — earliest so the choice stays reproducible
+    # and leaves the most footage ahead of the rollout.
+    have_xy = tracking[np.isfinite(tracking["x"]) & np.isfinite(tracking["y"])]
+    if have_xy.empty:
         return int(np.min(frames))
-    return int(frame)
+    is_ball = have_xy["team"].astype("string") == "ball"
+    per_frame = have_xy.assign(_ball=is_ball.astype(int), _player=(~is_ball).astype(int))
+    grouped = per_frame.groupby("frame")[["_ball", "_player"]].sum()
+    if grouped.empty:
+        return int(np.min(frames))
+    score = grouped["_ball"].clip(upper=1) * 1000 + grouped["_player"]
+    best = int(score.max())
+    chosen = int(score.index[np.flatnonzero(score.to_numpy() == best)[0]])
+    if best < 1000:
+        log.warning(
+            "no frame in this tracking file has a ball; starting from frame %d, "
+            "which has the fullest roster",
+            chosen,
+        )
+    return chosen
 
 
 def _fill_missing_slots(state: MatchState) -> MatchState:

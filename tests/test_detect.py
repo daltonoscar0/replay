@@ -30,12 +30,13 @@ def make_frame(
     with_ball: bool = True,
     specks: tuple[tuple[int, int], ...] = (),
     ring: tuple[int, int] | None = None,
+    ball_radius: int = 5,
 ):
     img = np.full((height, width, 3), PITCH_BGR, dtype=np.uint8)
     for (cx, cy), colour in zip(PLAYER_CENTERS, PLAYER_COLORS, strict=True):
         img[cy - 14 : cy + 15, cx - 7 : cx + 8] = colour
     if with_ball:
-        cv2.circle(img, BALL_CENTER, 5, WHITE, -1)
+        cv2.circle(img, BALL_CENTER, ball_radius, WHITE, -1)
     for sx, sy in specks:
         img[sy : sy + 2, sx : sx + 2] = WHITE
     if ring is not None:
@@ -81,8 +82,24 @@ def test_area_filter_rejects_noise_specks():
         assert not any(contains(d, (sx, sy)) for d in dets)
 
 
-def test_min_area_above_every_blob_yields_nothing():
-    assert ColorDetector(min_area=5000).detect(make_frame(), 0) == []
+def test_min_area_above_every_blob_leaves_only_the_ball():
+    # min_area is the player floor. The ball keeps its own, much lower floor,
+    # so raising the player floor must not silently take the ball with it.
+    dets = ColorDetector(min_area=5000).detect(make_frame(), 0)
+    assert [d.cls for d in dets] == ["ball"]
+
+
+def test_both_floors_above_every_blob_yields_nothing():
+    assert ColorDetector(min_area=5000, ball_min_area=5000).detect(make_frame(), 0) == []
+
+
+def test_ball_min_area_keeps_a_ball_smaller_than_the_player_floor():
+    # A ball at the far end of a wide shot is a dozen pixels; a player-sized
+    # floor would discard it entirely.
+    frame = make_frame(with_ball=False, ball_radius=2)
+    assert [d for d in ColorDetector(min_area=60).detect(frame, 0) if d.cls == "ball"] == []
+    dets = ColorDetector(min_area=60, ball_min_area=8).detect(make_frame(ball_radius=3), 0)
+    assert any(d.cls == "ball" for d in dets)
 
 
 def test_ball_max_area_reclassifies_the_ball_as_a_player():

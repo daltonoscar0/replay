@@ -278,6 +278,7 @@ def render_rollout_gif(states: Sequence[MatchState], out_path, *, fps: int = 10)
 def run_scenario(tracking: pd.DataFrame, scenario: Scenario) -> SimResult
 ```
 
-`SimResult` carries the per-rollout metrics frame, the baseline-vs-scenario
-delta table, and the states of rollout 0 for rendering. Identical `seed` must
+`SimResult` carries the per-rollout metrics frame (`metrics`), the
+baseline-vs-scenario delta table (`deltas`), and rollout 0 of each arm
+(`states`, `baseline_states`) for rendering. Identical `seed` must
 produce a bit-identical metrics table.

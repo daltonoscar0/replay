@@ -238,6 +238,25 @@ def to_tracking_frame(
     if not by_track:
         return empty_tracking_frame()
 
+    # There is exactly one ball. The detector disagrees: a marking corner in
+    # open grass looks like a ball for a frame or two, and every such blob opens
+    # its own track. Those tracks are short, so keeping only the longest-lived
+    # ball track both picks the real one and drops the noise — and it has to
+    # happen here, because every ball track otherwise writes rows under the same
+    # player_id and collides in the same frame.
+    ball_tracks = {tid: obs for tid, obs in by_track.items() if obs[0][4] == "ball"}
+    if len(ball_tracks) > 1:
+        keep = max(ball_tracks, key=lambda tid: len(ball_tracks[tid]))
+        for tid in ball_tracks:
+            if tid != keep:
+                del by_track[tid]
+        log.info(
+            "kept ball track %d (%d observations) and dropped %d shorter ball tracks",
+            keep,
+            len(ball_tracks[keep]),
+            len(ball_tracks) - 1,
+        )
+
     all_frames = sorted(boxes_by_frame)
     t_start = all_frames[0] / video_fps
     t_end = all_frames[-1] / video_fps

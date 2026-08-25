@@ -23,7 +23,7 @@ demo: ## end-to-end offline demo
 	uv run replay demo
 
 eval-table: ## regenerate the README accuracy table from a real evaluation
-	uv run replay eval --dataset demo --write-readme --readme README.md
+	uv run replay eval --dataset all --write-readme --readme README.md
 	@echo "accuracy section in README.md regenerated"
 
 clean:
