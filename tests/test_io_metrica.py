@@ -5,6 +5,7 @@ import types
 
 import numpy as np
 import pandas as pd
+import pandas.testing as pdt
 import pytest
 
 from replay.io import (
@@ -13,6 +14,7 @@ from replay.io import (
     from_canonical_csv,
     from_metrica,
     metrica,
+    read_tracking,
     to_canonical_csv,
     to_metrica,
 )
@@ -322,3 +324,50 @@ def test_sportio_reader_result_is_coerced(tmp_path, monkeypatch):
     got = from_metrica(path, match_id="m1")
     assert list(got.columns) == list(TRACKING_COLUMNS)
     assert_frames_match(got, want)
+
+
+# --- format sniffing --------------------------------------------------------
+
+
+def _sample_frame() -> pd.DataFrame:
+    rows = []
+    for f in range(4):
+        for team, jersey in (("home", 7), ("away", 9)):
+            rows.append(
+                {
+                    "match_id": "m", "t": f / 10.0, "period": 1, "frame": f,
+                    "team": team, "player_id": f"{team}_{jersey}", "jersey": jersey,
+                    "x": 10.0 + f, "y": 20.0 + f, "vx": np.nan, "vy": np.nan,
+                    "confidence": np.nan,
+                }
+            )
+        rows.append(
+            {
+                "match_id": "m", "t": f / 10.0, "period": 1, "frame": f,
+                "team": "ball", "player_id": "ball", "jersey": pd.NA,
+                "x": 50.0, "y": 34.0, "vx": np.nan, "vy": np.nan, "confidence": np.nan,
+            }
+        )
+    return coerce_tracking_frame(pd.DataFrame(rows))
+
+
+def test_read_tracking_detects_metrica_whatever_the_file_is_called(tmp_path):
+    path = tmp_path / "ground_truth_labels.csv"  # no format hint in the name
+    to_metrica(_sample_frame(), path)
+    out = read_tracking(path)
+    assert list(out.columns) == list(TRACKING_COLUMNS)
+    assert set(out["team"].dropna().astype(str)) == {"home", "away", "ball"}
+
+
+def test_read_tracking_detects_the_canonical_layout_whatever_the_file_is_called(tmp_path):
+    path = tmp_path / "my_hand_labels.csv"  # the case that used to fail
+    to_canonical_csv(_sample_frame(), path)
+    out = read_tracking(path)
+    pdt.assert_frame_equal(out, _sample_frame())
+
+
+def test_read_tracking_rejects_a_csv_that_is_neither(tmp_path):
+    path = tmp_path / "something_else.csv"
+    path.write_text("a,b,c\n1,2,3\n")
+    with pytest.raises(ValueError, match="neither a Metrica wide file nor a canonical"):
+        read_tracking(path)

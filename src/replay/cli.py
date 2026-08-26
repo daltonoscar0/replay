@@ -162,10 +162,7 @@ def _collect_reports(dataset: str, pred: Path | None, gt: Path | None, evaluate)
     """
     from replay.eval.metrics import AccuracyReport
     from replay.eval.soccernet import SoccerNetUnavailable, load_soccernet_gt
-    from replay.io import from_canonical_csv, from_metrica
-
-    def _read(p: Path):  # noqa: ANN202
-        return from_canonical_csv(p) if "canonical" in p.name else from_metrica(p)
+    from replay.io import read_tracking as _read
 
     if pred is not None and gt is not None:
         return [evaluate(_read(gt), _read(pred), dataset=dataset)]

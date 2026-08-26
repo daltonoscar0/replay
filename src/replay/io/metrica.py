@@ -275,3 +275,23 @@ def from_canonical_csv(path: str | Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"{src} is not a canonical tracking CSV; missing columns {missing}")
     return coerce_tracking_frame(raw)
+
+
+def read_tracking(path: str | Path, *, match_id: str = "unknown") -> pd.DataFrame:
+    """Load a tracking CSV in either supported layout, deciding from the file.
+
+    Both writers here produce a `.csv` and the extension says nothing about
+    which. Sniffing the header is the only honest way to tell them apart: a
+    filename convention puts the burden on the caller to name their ground-truth
+    file a particular way, and silently misreads it when they do not.
+    """
+    header = pd.read_csv(path, nrows=0).columns
+    if {"Period", "Frame", "Time [s]"}.issubset(set(header)):
+        return from_metrica(path, match_id=match_id)
+    missing = [c for c in TRACKING_COLUMNS if c not in header]
+    if missing:
+        raise ValueError(
+            f"{path} is neither a Metrica wide file nor a canonical tracking CSV; "
+            f"as canonical it is missing {missing}"
+        )
+    return from_canonical_csv(path)
