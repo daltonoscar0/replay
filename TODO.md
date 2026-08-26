@@ -27,11 +27,20 @@ that is not available offline.
   line and returns `None`; only that branch has ever executed. The live branch
   (`SegmentationNetwork`, `SV_FT_TSWC_kp` / `SV_FT_TSWC_lines` under
   `$REPLAY_SOCCERNET_WEIGHTS`) is written from the package docs and unverified.
-- **YOLO detector on real footage** — *manual/network*. `YoloDetector` is
-  implemented but never executed here: constructing it downloads `yolov8n.pt`.
-  Its one test is `@pytest.mark.network` and skipped unless
-  `REPLAY_NETWORK_TESTS=1`. Nothing in the tracker has been run against real
-  broadcast video.
+- **YOLO detector on real footage** — *manual*. The path now runs end to end:
+  weights download, the device resolves to `mps` on Apple Silicon, and
+  `replay track --detector yolo` completes without error. What has *not*
+  happened is a run against real broadcast video, so its detection quality is
+  still unmeasured. On the synthetic demo clip it correctly finds nothing —
+  YOLO looks for people and the clip draws rectangles — which exercises the
+  plumbing but says nothing about accuracy.
+- **Automatic calibration is unreliable, and manual calibration is the way in.**
+  `estimate_from_lines` returns `None` even on the synthetic clip, so assume it
+  will on real footage too. `scripts/calibrate.py` covers this: click four or
+  more landmarks and it solves for the camera, writing a check image alongside.
+  Recovering the demo clip's known camera from four landmarks is exact to
+  1e-6 m, but that is a self-consistency check, not evidence about hand-clicked
+  points on real video.
 
 - **`pressing` compatibility check** — *blocked*. The build sequence calls for
   verifying that `replay track` output feeds the suite's `pressing` tool, but

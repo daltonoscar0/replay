@@ -38,12 +38,28 @@ out to it, and the test suite skips the overlay module without it.
 ## Quickstart
 
 ```sh
-replay demo                                          # offline, CPU, no downloads, ~2 min
-replay track match.mp4 --out tracks.csv --fps 10     # needs the yolo extra
-replay overlay match.mp4 tracks.csv --out overlay.mp4 --homography camera.json
+replay demo                                          # offline, CPU, no downloads, ~1 min
 replay eval --dataset all
 replay sim tracks.csv --scenario scenarios/press_higher.yaml
 ```
+
+### Real broadcast footage
+
+Calibrate the camera once, then track against it. Both steps are needed: the
+tracker cannot produce pitch coordinates without a homography, and automatic
+line fitting gives up on most real frames rather than guess.
+
+```sh
+uv sync --extra yolo                                     # ultralytics + torch
+python scripts/calibrate.py match.mp4 --out camera.json  # click 4+ landmarks
+replay track match.mp4 --detector yolo --homography camera.json --out tracks.csv
+replay overlay match.mp4 tracks.csv --out overlay.mp4 --homography camera.json
+```
+
+`calibrate.py` always writes a check image with the pitch model projected back
+onto the frame. Look at it: a homography that is subtly wrong is unreadable as
+nine numbers and obvious as a picture. Nothing in this tool has been validated
+on real footage — see Limits.
 
 `replay demo` runs the whole pipeline on the bundled 30 s clip and writes
 `tracks.csv`, `overlay.mp4` and `rollout.gif` to `out/demo/`, then prints the

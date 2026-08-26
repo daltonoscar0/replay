@@ -72,11 +72,32 @@ def track(
         typer.echo(f"note: {note}")
 
     if result.tracks.empty:
-        typer.secho(
-            "no tracking rows produced — see the notes above (most often no "
-            "homography could be estimated)",
-            fg=typer.colors.RED,
-        )
+        # Three quite different failures land here and they need different
+        # fixes, so name the one that actually happened rather than guessing.
+        n_boxes = sum(len(v) for v in result.boxes_by_frame.values())
+        if result.homography is None:
+            reason = (
+                "no homography could be estimated, so there is nothing to convert "
+                "pixels into pitch coordinates with.\n"
+                "Fix: calibrate the camera once and pass it in --\n"
+                "  python scripts/calibrate.py VIDEO --out camera.json\n"
+                "  replay track VIDEO --homography camera.json ..."
+            )
+        elif n_boxes == 0:
+            reason = (
+                f"the {detector!r} detector found nothing in "
+                f"{result.n_frames_read} frames.\n"
+                "Fix: for real footage use --detector yolo (needs the 'yolo' extra); "
+                "the 'color' detector only works on the synthetic demo clip. "
+                "If you are already on yolo, try a lower --conf."
+            )
+        else:
+            reason = (
+                f"{n_boxes} boxes were tracked but none projected onto the pitch. "
+                "That usually means the homography is wrong -- check the image "
+                "written by scripts/calibrate.py."
+            )
+        typer.secho(f"no tracking rows produced: {reason}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     out.parent.mkdir(parents=True, exist_ok=True)
