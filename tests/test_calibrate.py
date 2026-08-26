@@ -297,3 +297,20 @@ def test_supplied_loss_rate_overrides_the_single_rollout_estimate():
     possession = next(m for m in report.metrics if m.name == "possession_loss_per_min")
     assert possession.sim == pytest.approx(3.25)
     assert "32 rollouts" in report.notes
+
+
+def test_ball_coverage_counts_located_frames_not_labelled_rows():
+    # A Metrica round trip emits a ball row for every frame, positioned or not.
+    # Counting rows would read a mostly-absent ball as full coverage and score a
+    # comparison that the data cannot support.
+    sim = _tracking(100, ball_every=1)
+    source = _tracking(100, ball_every=1)
+    ball = source["team"].astype("string") == "ball"
+    blanked = source.copy()
+    blanked.loc[ball & (blanked["frame"] % 25 != 0), ["x", "y"]] = np.nan
+
+    assert int(ball.sum()) == 100, "every frame still carries a ball row"
+    report = calibration_report(sim, blanked)
+    possession = next(m for m in report.metrics if m.name == "possession_loss_per_min")
+    assert not possession.measurable
+    assert "4%" in report.notes

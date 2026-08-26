@@ -430,7 +430,14 @@ def calibration_report(
     # rate collapses to zero, and comparing against it would hand out a verdict
     # the data cannot support — a confident PASS being every bit as wrong as a
     # confident FAIL.
-    ball_frames = int((source["team"].astype("string") == "ball").sum())
+    # Count frames where the ball has a position, not rows labelled "ball". The
+    # Metrica layout is a dense grid, so a round trip through it emits a ball
+    # row for every frame whether or not the ball was ever seen; counting rows
+    # reads 9% coverage as 100% and turns "unmeasurable" back into a confident
+    # comparison against zero.
+    is_ball = source["team"].astype("string") == "ball"
+    located = np.isfinite(source["x"]) & np.isfinite(source["y"])
+    ball_frames = int(source.loc[is_ball & located, "frame"].nunique())
     src_frames = int(source["frame"].nunique())
     ball_coverage = ball_frames / src_frames if src_frames else 0.0
     possession_measurable = ball_coverage >= BALL_COVERAGE_FOR_POSSESSION

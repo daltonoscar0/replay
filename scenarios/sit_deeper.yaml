@@ -1,0 +1,29 @@
+# Sit deeper: drop the block 2 m and press later.
+#
+# The mirror of press_higher.yaml, so the two can be run against the same
+# tracking file and read side by side. Everything except the two knobs below is
+# left at the baseline.
+
+name: sit_deeper
+description: >-
+  Drop the defending block 2 m and only commit to closing the carrier down once
+  they are properly close, holding shape and passing-lane priority at baseline.
+
+initial_state:
+  source: auto
+
+policy:
+  kind: rule_based
+
+  # Negative drops the block towards its own goal.
+  defensive_line: -2.0
+
+  # Press later than the 12 m baseline: invite the ball forward.
+  press_trigger_m: 7.0
+
+  line_compactness: 1.0
+  pass_lane_weight: 1.0
+
+horizon_s: 10.0
+n_rollouts: 32
+seed: 0
