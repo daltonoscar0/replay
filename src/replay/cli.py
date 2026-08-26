@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -245,15 +245,42 @@ def sim(
     typer.echo(result.deltas.to_string(index=False))
     result.deltas.to_csv(out_dir / "deltas.csv", index=False)
 
-    # calibrate compares simulated *tracking* against the source file,
-    # not the per-rollout metrics table.
-    cal = calibration_report(result.to_tracking(), df)
+    # calibrate compares simulated *tracking* against the source file, not the
+    # per-rollout metrics table. The possession rate comes from every rollout
+    # rather than the one that gets rendered.
+    cal = calibration_report(result.to_tracking(arm="baseline"), df, **_loss_rate(result))
     typer.echo("")
     typer.echo(cal.format())
 
     if gif:
         path = render_rollout_gif(result.states, out_dir / "rollout.gif")
         typer.echo(f"wrote {path}")
+
+
+def _loss_rate(result: Any) -> dict[str, Any]:
+    """Possession-loss rate over every rollout, for the calibration report.
+
+    A single ten-second rollout resolves the rate only to the nearest six per
+    minute, which is coarse enough to fail a sim that is fine. The driver
+    already ran dozens; use them.
+    """
+    metrics = getattr(result, "metrics", None)
+    if metrics is None or "possession_losses" not in getattr(metrics, "columns", []):
+        return {}
+    # The baseline arm, not the scenario arm: calibration asks whether the
+    # simulator reproduces the footage, and the scenario is the arm deliberately
+    # altered so that it does not.
+    scen = metrics.loc[metrics["arm"] == "baseline"]
+    if scen.empty:
+        return {}
+    horizon_s = float(getattr(getattr(result, "scenario", None), "horizon_s", 0.0) or 0.0)
+    if horizon_s <= 0.0:
+        return {}
+    return {
+        "sim_loss_rate_per_min": float(scen["possession_losses"].mean()) * 60.0 / horizon_s,
+        "n_rollouts": int(len(scen)),
+    }
+
 
 
 @app.command()
@@ -321,7 +348,11 @@ def demo(
     from replay.sim.calibrate import calibration_report
 
     typer.echo("")
-    typer.echo(calibration_report(sim_result.to_tracking(), source_tracks).format())
+    typer.echo(
+        calibration_report(
+            sim_result.to_tracking(arm="baseline"), source_tracks, **_loss_rate(sim_result)
+        ).format()
+    )
 
     typer.echo(f"\ndone. outputs in {out_dir}")
 

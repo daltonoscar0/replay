@@ -46,6 +46,12 @@ MIN_POSSESSION_FRAMES = 3
 #: dozen evenly spaced frames describe the clip as well as all of them.
 CONTROL_SAMPLE_FRAMES = 40
 
+#: Fraction of frames that must actually contain a ball before a possession rate
+#: inferred from the source means anything. Below this the sequence is mostly
+#: "loose", the count comes out near zero, and comparing to it would flatter or
+#: damn the simulator for no reason.
+BALL_COVERAGE_FOR_POSSESSION = 0.5
+
 # --- tolerances -------------------------------------------------------------
 # Event-data studies of open play put turnovers at roughly three to four per
 # minute across both teams. We allow the sim to be wrong by that whole amount:
@@ -282,6 +288,10 @@ class CalibrationMetric:
     source: float
     tolerance: float
     unit: str = ""
+    #: False when the source cannot support this comparison at all. An
+    #: unmeasurable metric is reported as n/a and is neither a pass nor a
+    #: failure: scoring it either way invents a verdict out of missing data.
+    measurable: bool = True
 
     @property
     def abs_delta(self) -> float:
@@ -297,9 +307,17 @@ class CalibrationMetric:
 
     @property
     def passed(self) -> bool:
+        if not self.measurable:
+            return True
         if not (np.isfinite(self.sim) and np.isfinite(self.source)):
             return False
         return self.abs_delta <= self.tolerance
+
+    @property
+    def status(self) -> str:
+        if not self.measurable:
+            return "n/a"
+        return "PASS" if self.passed else "FAIL"
 
     def to_row(self) -> dict[str, float | str | bool]:
         return {
@@ -331,6 +349,10 @@ class CalibrationReport:
     def failures(self) -> list[CalibrationMetric]:
         return [m for m in self.metrics if not m.passed]
 
+    @property
+    def unmeasured(self) -> list[CalibrationMetric]:
+        return [m for m in self.metrics if not m.measurable]
+
     def to_frame(self) -> pd.DataFrame:
         return pd.DataFrame([m.to_row() for m in self.metrics])
 
@@ -354,7 +376,7 @@ class CalibrationReport:
                         _num(m.abs_delta),
                         rel,
                         _num(m.tolerance),
-                        "PASS" if m.passed else "FAIL",
+                        m.status,
                     ),
                     widths,
                 )
@@ -365,6 +387,9 @@ class CalibrationReport:
         if not self.passed:
             names = ", ".join(m.name for m in self.failures)
             lines.append(f"out of tolerance: {names}")
+        if self.unmeasured:
+            names = ", ".join(m.name for m in self.unmeasured)
+            lines.append(f"not measurable from this source: {names}")
         if self.notes:
             lines.append(f"note: {self.notes}")
         return "\n".join(lines)
@@ -378,10 +403,37 @@ def _num(value: float) -> str:
     return "nan" if not np.isfinite(value) else f"{value:.3f}"
 
 
-def calibration_report(sim: pd.DataFrame, source: pd.DataFrame) -> CalibrationReport:
-    """Compare a simulated tracking frame against the source it came from."""
+def calibration_report(
+    sim: pd.DataFrame,
+    source: pd.DataFrame,
+    *,
+    sim_loss_rate_per_min: float | None = None,
+    n_rollouts: int = 1,
+) -> CalibrationReport:
+    """Compare a simulated tracking frame against the source it came from.
+
+    ``sim`` is one rollout, which is a small sample to judge a stochastic model
+    on. A ten-second rollout holds one or two turnovers, so its implied rate
+    moves in steps of six per minute and a single unlucky draw can look like a
+    badly miscalibrated simulator. Pass ``sim_loss_rate_per_min`` — the mean the
+    driver measured across every rollout it ran — to be judged on the full
+    sample instead. The driver's count and the one inferred here agree on the
+    same rollout; averaging is about variance, not about a different definition.
+    """
     sim_stats = summarize_tracking(sim)
     src_stats = summarize_tracking(source)
+    if sim_loss_rate_per_min is not None:
+        sim_stats = {**sim_stats, "possession_loss_per_min": float(sim_loss_rate_per_min)}
+
+    # Possession can only be inferred from a source that actually shows a ball.
+    # Below the coverage floor the inferred sequence is almost all "loose", the
+    # rate collapses to zero, and comparing against it would hand out a verdict
+    # the data cannot support — a confident PASS being every bit as wrong as a
+    # confident FAIL.
+    ball_frames = int((source["team"].astype("string") == "ball").sum())
+    src_frames = int(source["frame"].nunique())
+    ball_coverage = ball_frames / src_frames if src_frames else 0.0
+    possession_measurable = ball_coverage >= BALL_COVERAGE_FOR_POSSESSION
 
     metrics = [
         CalibrationMetric(
@@ -390,15 +442,28 @@ def calibration_report(sim: pd.DataFrame, source: pd.DataFrame) -> CalibrationRe
             source=src_stats[name],
             tolerance=tol,
             unit=METRIC_UNITS.get(name, ""),
+            measurable=possession_measurable or name != "possession_loss_per_min",
         )
         for name, tol in METRIC_TOLERANCES.items()
     ]
     notes = ""
     if _duration_minutes(source) <= 0.0:
         notes = "source clip has no measurable duration; loss rate reported as a raw count"
+    if sim_loss_rate_per_min is not None and n_rollouts > 1:
+        notes = (
+            f"possession rate averaged over {n_rollouts} rollouts; "
+            "the other metrics describe rollout 0"
+            + (f". {notes}" if notes else "")
+        )
+    if not possession_measurable:
+        notes = (
+            f"source has a ball in only {ball_coverage * 100:.0f}% of frames, too few "
+            "to infer possession from"
+            + (f". {notes}" if notes else "")
+        )
     return CalibrationReport(
         metrics=metrics,
         n_frames_sim=int(sim["frame"].nunique()),
-        n_frames_source=int(source["frame"].nunique()),
+        n_frames_source=src_frames,
         notes=notes,
     )

@@ -8,8 +8,9 @@ homography, or re-run team assignment without redoing the expensive parts.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -176,12 +177,19 @@ def detect_and_track(
     )
     tracker = ByteTrack()
     boxes_by_frame: dict[int, list[TrackedBox]] = {}
+    ball_dets: dict[int, list[Detection]] = {}
     probe_frames: list[np.ndarray] = []
     n_read = 0
 
     for idx, img in reader.frames(stride=cfg.frame_stride, limit=cfg.max_frames):
         dets: list[Detection] = detector.detect(img, idx)
-        boxes_by_frame[idx] = tracker.update(dets, idx)
+        # Players stream straight into the tracker. Ball candidates are held
+        # back, because deciding which of them are painted on takes the whole
+        # clip (see _track_ball).
+        balls = [d for d in dets if d.cls == "ball"]
+        if balls:
+            ball_dets[idx] = balls
+        boxes_by_frame[idx] = tracker.update([d for d in dets if d.cls != "ball"], idx)
         # Cache a sparse set of frames for team assignment and homography
         # probing so neither stage has to seek backwards later.
         if n_read % 25 == 0:
@@ -192,13 +200,100 @@ def detect_and_track(
         if progress is not None:
             progress(n_read)
 
+    for idx, boxes in _track_ball(ball_dets).items():
+        boxes_by_frame.setdefault(idx, []).extend(boxes)
+
     return boxes_by_frame, probe_frames, n_read
 
 
+#: Ball candidates are binned into cells this many pixels across, and a cell
+#: that is occupied in more than this fraction of frames is taken to be paint
+#: rather than a ball.
+BALL_STATIC_CELL_PX = 6
+BALL_STATIC_FRAME_FRACTION = 0.2
+
+#: Ball track ids are offset past the player tracker's so the two independent
+#: trackers cannot hand out the same id.
+BALL_TRACK_ID_OFFSET = 1_000_000
+
+
+def _track_ball(ball_dets: dict[int, list[Detection]]) -> dict[int, list[TrackedBox]]:
+    """Track the ball on its own, after discarding the painted impostors.
+
+    The ball detector is tuned for recall and returns a couple of dozen
+    candidates a frame: the penalty spots, the centre mark and the junctions
+    where lines meet are all small, round, white and surrounded by grass. No
+    single frame can tell them apart from the ball. A sequence of frames can.
+    Paint stays exactly where it is, so it lights up the same handful of image
+    cells all clip long, while the ball is somewhere new every frame. Measuring
+    how often each cell is occupied separates them cleanly, and it costs
+    nothing that a per-frame appearance test could have bought.
+
+    Filtering has to finish before the first frame can be tracked, so the
+    candidates are buffered rather than streamed — a few tens of thousands of
+    small boxes for a clip, and the reason this is worth keeping an eye on for a
+    full match.
+
+    This reads image position, so it assumes the camera is not panning far. A
+    pan smears each mark across many cells and weakens it; the pitch-space
+    movement gate in `_resolve_ball` is what catches them after that.
+    """
+    if not ball_dets:
+        return {}
+
+    n_frames = len(ball_dets)
+    occupancy: Counter[tuple[int, int]] = Counter()
+    for dets in ball_dets.values():
+        # One vote per cell per frame, so a cluster of candidates on one mark
+        # cannot out-vote its own frame count.
+        seen = set()
+        for d in dets:
+            cu, cv = d.center
+            seen.add((round(cu / BALL_STATIC_CELL_PX), round(cv / BALL_STATIC_CELL_PX)))
+        occupancy.update(seen)
+
+    limit = BALL_STATIC_FRAME_FRACTION * n_frames
+    static = {cell for cell, count in occupancy.items() if count > limit}
+
+    tracker = ByteTrack()
+    out: dict[int, list[TrackedBox]] = {}
+    kept = dropped = 0
+    for idx in sorted(ball_dets):
+        live = []
+        for d in ball_dets[idx]:
+            cu, cv = d.center
+            cell = (round(cu / BALL_STATIC_CELL_PX), round(cv / BALL_STATIC_CELL_PX))
+            if cell in static:
+                dropped += 1
+            else:
+                live.append(d)
+                kept += 1
+        boxes = tracker.update(live, idx)
+        if boxes:
+            out[idx] = [
+                replace(b, track_id=b.track_id + BALL_TRACK_ID_OFFSET) for b in boxes
+            ]
+    log.info(
+        "ball: %d candidates kept, %d dropped at %d stationary image cells",
+        kept,
+        dropped,
+        len(static),
+    )
+    return out
+
+
 def _resample_to_fps(
-    t: np.ndarray, xy: np.ndarray, target_t: np.ndarray
+    t: np.ndarray, xy: np.ndarray, target_t: np.ndarray, *, max_gap_s: float = np.inf
 ) -> np.ndarray:
-    """Linear resample of a (N,2) trajectory onto `target_t`, NaN outside range."""
+    """Linear resample of a (N,2) trajectory onto `target_t`, NaN outside range.
+
+    Interpolation is refused across a gap wider than ``max_gap_s``. Straight-line
+    filling is only defensible over a gap short enough that the object could not
+    have gone anywhere interesting, and the ball breaks that badly: it is tracked
+    in fragments, travels at up to 20 m/s, and a chord drawn between two
+    fragments a second apart can put it twenty metres from where it really was.
+    Emitting nothing is the honest output for a stretch that was not observed.
+    """
     out = np.full((target_t.size, 2), np.nan, dtype=np.float64)
     finite = np.isfinite(xy).all(axis=1)
     if finite.sum() < 2:
@@ -207,7 +302,97 @@ def _resample_to_fps(
     inside = (target_t >= tf[0]) & (target_t <= tf[-1])
     for j in range(2):
         out[inside, j] = np.interp(target_t[inside], tf, xyf[:, j])
+
+    if np.isfinite(max_gap_s):
+        # Width of the observed interval each target time falls into.
+        hi = np.clip(np.searchsorted(tf, target_t, side="left"), 1, tf.size - 1)
+        too_wide = (tf[hi] - tf[hi - 1]) > max_gap_s
+        out[inside & too_wide] = np.nan
     return out
+
+
+#: How far a ball candidate must travel over its whole life, in meters, before
+#: it is believed. Penalty spots, the centre spot and goal-frame corners are
+#: white, round, and sit in open grass, so they pass every appearance test the
+#: detector can apply — but they do not move. On the demo clip the gap is stark:
+#: marking tracks cover at most 0.7 m while real ball fragments cover 2.5 m or
+#: more, so anything in between is a safe place to draw the line.
+BALL_MIN_PATH_M = 1.5
+
+#: Longest unobserved stretch that may be bridged by interpolation, per class.
+#: A player runs at up to 8 m/s and turns slowly, so half a second of straight
+#: line costs a couple of metres at worst. A ball leaves a boot at 20 m/s and
+#: changes direction instantly, so the same half second is meaningless.
+PLAYER_MAX_GAP_S = 1.0
+BALL_MAX_GAP_S = 0.3
+
+Observation = tuple[int, float, float, float, str]
+
+
+def _resolve_ball(by_track: dict[int, list[Observation]], homography: Homography | None) -> None:
+    """Reduce every ball-class track to one moving ball, in place.
+
+    Two problems at once. Each spurious white blob opens its own track, and all
+    of them would be written under the same ``player_id``, colliding in a single
+    frame. And the obvious tiebreak — keep the longest-lived — is exactly wrong:
+    a painted marking never moves, so it tracks cleanly for the entire clip,
+    while the real ball is fast and keeps fragmenting. Longest-lived reliably
+    picks the penalty spot.
+
+    So candidates are judged on movement instead, measured in pitch meters
+    rather than pixels: a marking is stationary on the pitch whether or not the
+    camera pans, and a pixel threshold would only hold for a locked-off shot.
+    Whatever survives is fragments of the one real ball, so they are merged into
+    a single track rather than a winner being chosen among them. Where two
+    fragments claim the same frame the longer one wins, on the grounds that it
+    had more evidence behind it.
+
+    The cost is a ball that genuinely never moves — a long dead-ball period —
+    which this discards. Mistaking a penalty spot for the ball is the worse
+    failure, because it is silent and puts the ball metres from every player.
+    """
+    ball_tracks = {tid: obs for tid, obs in by_track.items() if obs and obs[0][4] == "ball"}
+    if not ball_tracks:
+        return
+    for tid in ball_tracks:
+        del by_track[tid]
+    if homography is None:
+        return
+
+    moving: dict[int, float] = {}
+    for tid, obs in ball_tracks.items():
+        pts = homography.image_to_pitch(np.array([[o[1], o[2]] for o in sorted(obs)]))
+        steps = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        path = float(np.nansum(steps)) if steps.size else 0.0
+        if path >= BALL_MIN_PATH_M:
+            moving[tid] = path
+
+    if not moving:
+        log.warning(
+            "no ball track moved at least %.1f m; %d stationary candidate(s) discarded "
+            "as pitch markings, so the output has no ball",
+            BALL_MIN_PATH_M,
+            len(ball_tracks),
+        )
+        return
+
+    # Longest last, so its observations overwrite shorter fragments on any frame
+    # the two disagree about.
+    order = sorted(moving, key=lambda tid: len(ball_tracks[tid]))
+    merged: dict[int, Observation] = {}
+    for tid in order:
+        for o in ball_tracks[tid]:
+            merged[o[0]] = o
+
+    keep = order[-1]
+    by_track[keep] = [merged[f] for f in sorted(merged)]
+    log.info(
+        "merged %d moving ball fragment(s) into %d observations and discarded %d "
+        "stationary candidate(s)",
+        len(moving),
+        len(merged),
+        len(ball_tracks) - len(moving),
+    )
 
 
 def to_tracking_frame(
@@ -238,24 +423,7 @@ def to_tracking_frame(
     if not by_track:
         return empty_tracking_frame()
 
-    # There is exactly one ball. The detector disagrees: a marking corner in
-    # open grass looks like a ball for a frame or two, and every such blob opens
-    # its own track. Those tracks are short, so keeping only the longest-lived
-    # ball track both picks the real one and drops the noise — and it has to
-    # happen here, because every ball track otherwise writes rows under the same
-    # player_id and collides in the same frame.
-    ball_tracks = {tid: obs for tid, obs in by_track.items() if obs[0][4] == "ball"}
-    if len(ball_tracks) > 1:
-        keep = max(ball_tracks, key=lambda tid: len(ball_tracks[tid]))
-        for tid in ball_tracks:
-            if tid != keep:
-                del by_track[tid]
-        log.info(
-            "kept ball track %d (%d observations) and dropped %d shorter ball tracks",
-            keep,
-            len(ball_tracks[keep]),
-            len(ball_tracks) - 1,
-        )
+    _resolve_ball(by_track, homography)
 
     all_frames = sorted(boxes_by_frame)
     t_start = all_frames[0] / video_fps
@@ -288,8 +456,11 @@ def to_tracking_frame(
         else:
             sm, vel = pitch, np.full_like(pitch, np.nan)
 
-        rs = _resample_to_fps(t, sm, target_t)
-        rv = _resample_to_fps(t, vel, target_t)
+        # A player drifts predictably and can be bridged across a short dropout;
+        # the ball cannot, so it gets a much tighter budget.
+        max_gap = BALL_MAX_GAP_S if cls == "ball" else PLAYER_MAX_GAP_S
+        rs = _resample_to_fps(t, sm, target_t, max_gap_s=max_gap)
+        rv = _resample_to_fps(t, vel, target_t, max_gap_s=max_gap)
         rc = np.interp(target_t, t, conf, left=np.nan, right=np.nan)
 
         team_label, team_conf = teams.get(track_id, ("unknown", 0.0))

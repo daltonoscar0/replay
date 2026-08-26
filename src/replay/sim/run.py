@@ -54,6 +54,11 @@ TURNOVER_RATE_HZ = 0.35
 TACKLE_SCALE_M = 2.5
 #: The carrier looks for a pass once an opponent is this close, and commits with
 #: this probability per tick, i.e. roughly once every 0.4 s of being pressed.
+#: How much of the distance to a loose ball the intended receiver effectively
+#: has to cover, relative to everyone else, when the pickup is settled. They are
+#: running onto it and expecting it; a defender is reacting.
+RECEIVER_HEAD_START = 0.5
+
 PASS_TRIGGER_M = 4.0
 PASS_PROB_PER_TICK = 0.25
 PASS_MIN_M = 6.0
@@ -303,6 +308,7 @@ def rollout(
     distance = np.zeros(2 * N_PLAYERS_PER_TEAM)
     flight_ticks = 0
     passer = -1
+    receiver = -1
     last_team = start_team
 
     for tick in range(n_ticks):
@@ -329,8 +335,8 @@ def rollout(
             ball_pos = clamp_to_pitch(ball_pos)
             flight_ticks += 1
 
-        possession, ball_pos, ball_vel, passer, flight_ticks = _update_possession(
-            possession, new_pos, ball_pos, ball_vel, draws, passer, flight_ticks
+        possession, ball_pos, ball_vel, passer, receiver, flight_ticks = _update_possession(
+            possession, new_pos, ball_pos, ball_vel, draws, passer, receiver, flight_ticks
         )
 
         pos = np.vstack([new_pos, ball_pos.reshape(1, 2)])
@@ -376,8 +382,9 @@ def _update_possession(
     ball_vel: np.ndarray,
     draws: np.ndarray,
     passer: int,
+    receiver: int,
     flight_ticks: int,
-) -> tuple[int, np.ndarray, np.ndarray, int, int]:
+) -> tuple[int, np.ndarray, np.ndarray, int, int, int]:
     """Tackles, passes and loose-ball pickups for one tick."""
     if possession >= 0:
         team: TeamSide = "home" if possession < N_PLAYERS_PER_TEAM else "away"
@@ -393,7 +400,7 @@ def _update_possession(
         hazard = TURNOVER_RATE_HZ * DT * float(np.exp(-pressure / TACKLE_SCALE_M))
         if draws[0] < hazard:
             new_carrier = opp_offset + nearest
-            return new_carrier, player_pos[new_carrier].copy(), np.zeros(2), -1, 0
+            return new_carrier, player_pos[new_carrier].copy(), np.zeros(2), -1, -1, 0
 
         if pressure < PASS_TRIGGER_M and draws[1] < PASS_PROB_PER_TICK:
             carrier_local = possession - (0 if team == "home" else N_PLAYERS_PER_TEAM)
@@ -404,19 +411,28 @@ def _update_possession(
                 dist = float(np.linalg.norm(offset))
                 if dist > 1e-6:
                     speed = float(np.clip(dist / PASS_FLIGHT_S, PASS_SPEED_MIN, PASS_SPEED_MAX))
-                    return -1, ball_pos, offset / dist * speed, possession, 0
-        return possession, ball_pos, ball_vel, passer, flight_ticks
+                    target_global = target + (0 if team == "home" else N_PLAYERS_PER_TEAM)
+                    return -1, ball_pos, offset / dist * speed, possession, target_global, 0
+        return possession, ball_pos, ball_vel, passer, receiver, flight_ticks
 
     if flight_ticks < MIN_FLIGHT_TICKS:
-        return -1, ball_pos, ball_vel, passer, flight_ticks
+        return -1, ball_pos, ball_vel, passer, receiver, flight_ticks
 
     dist = np.linalg.norm(player_pos - ball_pos, axis=1)
     if passer >= 0 and flight_ticks < PASSER_LOCKOUT_TICKS:
         dist[passer] = np.inf
-    winner = int(np.argmin(dist))
+    # The intended receiver is already moving onto the ball while everyone else
+    # is still reacting to it, so give them a head start rather than settling
+    # the pickup on raw proximity. Without this every pass is a fifty-fifty with
+    # whoever happens to be standing nearest when it arrives, and the simulator
+    # turns the ball over about twice as often as real open play does.
+    effective = dist.copy()
+    if receiver >= 0:
+        effective[receiver] *= RECEIVER_HEAD_START
+    winner = int(np.argmin(effective))
     if dist[winner] <= CONTROL_RADIUS_M:
-        return winner, player_pos[winner].copy(), np.zeros(2), -1, 0
-    return -1, ball_pos, ball_vel, passer, flight_ticks
+        return winner, player_pos[winner].copy(), np.zeros(2), -1, -1, 0
+    return -1, ball_pos, ball_vel, passer, receiver, flight_ticks
 
 
 # --- driver -----------------------------------------------------------------

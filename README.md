@@ -20,7 +20,7 @@ could not be run say so rather than being omitted.
 
 | Dataset | Frames | MOTA | MOTP (m) | IDF1 | ID switches | FP | Misses | RMSE (m) | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| demo (synthetic clip) | 301 | 0.928 | 0.331 | 0.883 | 16 | 97 | 384 | 0.398 | synthetic clip, colour detector, camera calibration supplied; not representative of broadcast footage |
+| demo (synthetic clip) | 301 | 0.943 | 0.334 | 0.889 | 18 | 24 | 356 | 0.403 | synthetic clip, colour detector, camera calibration supplied; not representative of broadcast footage |
 | soccernet-test | 0 | n/a | n/a | n/a | 0 | 0 | 0 | n/a | not run: SoccerNet ground truth unavailable: nothing exists at data/raw/soccernet. SoccerNet data is distributed under an NDA and the archives are password-protected. Download it yourself from https://www.soccer-net.org (accept the NDA to receive the password), extract the sequences, and point this loader at the directory that contains them. Nothing here will fetch or unlock the data for you. |
 
 <!-- END ACCURACY -->
@@ -99,15 +99,18 @@ Read this before trusting a number out of this tool.
 - **Nothing here has been run on real broadcast footage.** The YOLO path is
   implemented but never executed: constructing it downloads weights, so its
   only test is network-marked and skipped by default.
-- **The sandbox currently fails its own possession calibration.** `replay demo`
-  prints it. The simulator turns the ball over several times more often than
-  the source footage does; the tolerance was not widened to hide it. Read the
-  scenario delta table as directional until that is fixed.
-- **The ball is the weak link in the colour detector.** Ball, pitch markings
-  and the home team's white shorts are all the same white, so the ball is
-  separated by roundness and by sitting in open grass. That finds it in about
-  half the frames and still lets some marking fragments through — most of the
-  false positives in the table above are this.
+- **The sandbox calibrates against clean tracking, not against its own
+  tracker.** Started from exact ground truth, all three calibration metrics
+  pass. Started from the bundled clip's tracker output, `replay demo` reports
+  possession as `n/a` — 9% ball coverage is too sparse to infer it from — and
+  `control_share_home` outside tolerance. No tolerance was widened; the report
+  says which metrics it could not measure rather than scoring them anyway.
+- **The ball is found in a minority of frames, and that is the deliberate
+  trade.** Ball, pitch markings and white shorts are all the same white.
+  Filtering hard enough to be sure means the ball is written in about 9% of
+  frames — but within a metre of the truth when it is. Loosening it was tried
+  and measured, and it puts the ball twenty metres out; `TODO.md` has the
+  numbers and what a real fix needs.
 - **The Metrica writer is vendored** under `replay/io/`, and is used until the
   suite's `sportio` package is installed, at which point the adapter switches
   automatically. Two deviations from the released Metrica layout: home and away

@@ -295,3 +295,80 @@ def test_determinism_holds_at_a_realistic_rollout_count():
     b = run_scenario(tracking, scenario)
     pdt.assert_frame_equal(a.metrics, b.metrics, check_exact=True)
     pdt.assert_frame_equal(a.deltas, b.deltas, check_exact=True)
+
+
+# --- the intended receiver's head start -------------------------------------
+
+
+def _pickup_state(receiver_dist: float, opponent_dist: float):
+    """A loose ball with one home player and one away player closing on it."""
+    from replay.sim.state import N_PLAYERS_PER_TEAM
+
+    pos = np.full((2 * N_PLAYERS_PER_TEAM, 2), 500.0)
+    ball = np.array([50.0, 34.0])
+    pos[0] = ball + np.array([receiver_dist, 0.0])  # home 0, the intended target
+    pos[N_PLAYERS_PER_TEAM] = ball - np.array([opponent_dist, 0.0])  # away 0
+    return pos, ball
+
+
+def test_intended_receiver_beats_a_marginally_closer_opponent():
+    from replay.sim.run import _update_possession
+
+    pos, ball = _pickup_state(receiver_dist=1.0, opponent_dist=0.8)
+    possession, *_ = _update_possession(
+        -1, pos, ball, np.zeros(2), np.zeros(2), passer=-1, receiver=0, flight_ticks=5
+    )
+    assert possession == 0, "a player running onto an expected pass should win it"
+
+
+def test_without_an_intended_receiver_the_nearest_player_still_wins():
+    from replay.sim.run import _update_possession
+    from replay.sim.state import N_PLAYERS_PER_TEAM
+
+    pos, ball = _pickup_state(receiver_dist=1.0, opponent_dist=0.8)
+    possession, *_ = _update_possession(
+        -1, pos, ball, np.zeros(2), np.zeros(2), passer=-1, receiver=-1, flight_ticks=5
+    )
+    assert possession == N_PLAYERS_PER_TEAM, "a genuinely loose ball goes to whoever is nearest"
+
+
+def test_a_head_start_does_not_conjure_the_ball_across_the_pitch():
+    from replay.sim.run import CONTROL_RADIUS_M, _update_possession
+
+    pos, ball = _pickup_state(receiver_dist=4 * CONTROL_RADIUS_M, opponent_dist=500.0)
+    possession, *_ = _update_possession(
+        -1, pos, ball, np.zeros(2), np.zeros(2), passer=-1, receiver=0, flight_ticks=5
+    )
+    assert possession == -1, "the control radius is still measured on the real distance"
+
+
+def test_receiver_head_start_lowers_the_turnover_rate():
+    """The regression this exists for: passes were fifty-fifty on arrival.
+
+    Settling every pass on raw proximity turned the ball over about twice as
+    often as real open play, which is what made the sandbox miss its own
+    possession calibration.
+    """
+    import replay.sim.run as run_mod
+    from replay.io import from_canonical_csv
+    from replay.sim.scenario import load_scenario
+
+    source = from_canonical_csv("demo/assets/ground_truth.csv")
+    scenario = load_scenario("scenarios/press_higher.yaml")
+
+    def baseline_rate() -> float:
+        result = run_mod.run_scenario(source, scenario)
+        arm = result.metrics.loc[result.metrics["arm"] == "baseline"]
+        return float(arm["possession_losses"].mean()) * 60.0 / scenario.horizon_s
+
+    with_head_start = baseline_rate()
+    original = run_mod.RECEIVER_HEAD_START
+    try:
+        run_mod.RECEIVER_HEAD_START = 1.0  # no advantage: pure proximity
+        without = baseline_rate()
+    finally:
+        run_mod.RECEIVER_HEAD_START = original
+
+    assert with_head_start < without
+    # Open-play event data puts turnovers at roughly 3-4 a minute.
+    assert with_head_start < 6.0

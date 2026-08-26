@@ -53,23 +53,28 @@ that is not available offline.
   supplied. Use `to_canonical_csv` / `from_canonical_csv` when a round trip has
   to preserve everything. Velocities can be recomputed with
   `replay.track.kalman.smooth_track`.
-- **The sandbox fails its own possession calibration.** `replay demo` prints
-  `possession_loss_per_min ... FAIL`: the simulator churns possession several
-  times more often than the source footage does. The tolerance
-  (`POSSESSION_LOSS_TOL_PER_MIN = 4.0`) was deliberately *not* widened to make
-  it pass. The turnover model in `replay/sim/run.py` (`TURNOVER_RATE_HZ`,
-  `TACKLE_SCALE_M`, `PASS_TRIGGER_M`) is what needs work. Treat the delta table
-  as directional until this passes.
-- **`SimResult.deltas` and `calibrate` count possession differently** — the
-  driver knows who holds the ball, `calibrate` re-infers it from proximity
-  because canonical tracking has no possession column. They disagree by roughly
-  2x on the same rollout. Reconcile before quoting either as *the* number.
-- **Ball detection is the weak link in the colour path.** The ball, the pitch
-  markings and the home team's shorts are all the same white, so the ball is
-  separated by shape and by sitting in open grass. On the demo clip that finds
-  it in roughly half of frames and still admits some marking fragments; the
-  tracker's `min_hits` and the single-ball rule in `track/pipeline.py` clean up
-  the rest. Most of the accuracy table's false positives are this.
+- **Ball coverage is low, by choice.** The colour detector finds the ball in
+  about one frame in seven, and after the stationary-candidate and movement
+  filters roughly 9% of output frames carry one. What does get written is
+  accurate — median 0.86 m from truth, worst case 1.8 m on the demo clip.
+  The permissive alternative was built and measured: segmenting the ball off the
+  raw white mask by thickness lifts detection to three frames in four, but
+  perspective makes a near-camera marking thicker than a far-touchline ball, so
+  no single threshold separates them and the leftovers are moving stubs of line
+  that survive every downstream filter. End to end that put the ball ~20 m from
+  the truth. Getting both needs a depth-aware threshold — scale the core radius
+  by the homography's local metres-per-pixel — which is the real fix and is not
+  done.
+- **9% ball coverage is too sparse to infer possession from**, so calibration
+  reports the possession row as `n/a` when run against tracker output rather
+  than scoring it. Against exact ground truth the row is measured and passes.
+- **Which eleven tracks become the roster changes the sim.** The tracker emits
+  ~18 home identities over 30 s for 11 players, and `build_roster` keeps eleven.
+  Reading the same tracking through the canonical CSV and through Metrica picks
+  different elevens — jersey numbers survive one and not the other — and the two
+  give different enough initial states that `control_share_home` calibrates
+  inside tolerance from one and outside it from the other. Consolidating
+  fragmented identities before roster selection is the fix.
 - **`ColorDetector` is tuned for the synthetic clip.** Two players whose blobs
   touch merge into one detection. Its HSV bounds and shape filters are module
   constants, not parameters. It is the offline demo path, not a real detector.

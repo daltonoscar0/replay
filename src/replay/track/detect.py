@@ -34,11 +34,12 @@ BALL_MIN_VAL = 140.0
 # fills its bounding box like a disc does, and it is the only white thing that
 # sits in open grass: shorts have a jersey above them and a marking fragment has
 # more marking around it. Together these cut false balls by roughly four fifths
-# on the demo clip at a cost of some recall, and the ones that get through are
-# transient enough that the tracker's min_hits discards them.
-BALL_MIN_FILL = 0.5
+# on the demo clip at a cost of some recall; what still gets through is
+# stationary paint, which `track.pipeline` removes.
+BALL_MIN_FILL = 0.45
 BALL_RING_GREEN = 0.7
 BALL_RING_PAD = 4
+BALL_MAX_ASPECT = 2.5
 
 # Shape sanity checks. Pitch lines survive the green mask as long thin blobs
 # with a poor fill ratio, and stand/banner leakage shows up as one huge blob.
@@ -58,6 +59,16 @@ WHITE_UPPER = np.array([179, 80, 255], dtype=np.uint8)
 
 # COCO ids ultralytics reports, mapped onto our two classes.
 COCO_CLASS_MAP: dict[int, ObjectClass] = {0: "player", 32: "ball"}
+
+
+def _overlaps(a: Detection, b: Detection, *, min_iou: float = 0.1) -> bool:
+    ix = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1))
+    iy = max(0.0, min(a.y2, b.y2) - max(a.y1, b.y1))
+    inter = ix * iy
+    if inter <= 0.0:
+        return False
+    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter
+    return union > 0.0 and inter / union >= min_iou
 
 
 @runtime_checkable
@@ -179,45 +190,34 @@ class ColorDetector:
         pitch = _pitch_mask(green)
         objects = _suppress_markings(hsv, cv2.bitwise_and(pitch, cv2.bitwise_not(green)))
 
-        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(objects, 8)
+        balls = self._detect_ball(hsv, green, objects, frame_idx)
+        out = self._detect_players(hsv, objects, frame_idx)
+
+        # The ball is found on its own mask, so a blob big enough to be a player
+        # component can also have produced a ball candidate. Keep the ball.
+        if balls:
+            out = [d for d in out if not any(_overlaps(d, b) for b in balls)]
+        return out + balls
+
+    def _detect_players(
+        self, hsv: np.ndarray, objects: np.ndarray, frame_idx: int
+    ) -> list[Detection]:
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(objects, 8)
         h, w = objects.shape[:2]
         max_area = MAX_AREA_FRACTION * float(h * w)
-
-        sat = hsv[:, :, 1].astype(np.float64)
-        val = hsv[:, :, 2].astype(np.float64)
 
         out: list[Detection] = []
         for label in range(1, n_labels):
             x, y, bw, bh, area = (int(v) for v in stats[label][:5])
-            if area < min(self.min_area, self.ball_min_area) or area > max_area:
+            if area < self.min_area or area > max_area or bw == 0 or bh == 0:
                 continue
-            if bw == 0 or bh == 0:
-                continue
-            aspect = max(bw / bh, bh / bw)
-            if aspect > MAX_ASPECT:
+            if max(bw / bh, bh / bw) > MAX_ASPECT:
                 continue
             fill = area / float(bw * bh)
             if fill < MIN_FILL_RATIO:
                 continue
-
-            mask = labels[y : y + bh, x : x + bw] == label
-            mean_sat = float(sat[y : y + bh, x : x + bw][mask].mean())
-            mean_val = float(val[y : y + bh, x : x + bw][mask].mean())
-            is_ball = (
-                self.ball_min_area <= area <= self.ball_max_area
-                and mean_sat <= BALL_MAX_SAT
-                and mean_val >= BALL_MIN_VAL
-                and fill >= BALL_MIN_FILL
-                and _in_open_grass(green, x, y, bw, bh)
-            )
-            # Below the player floor the only thing worth keeping is a ball.
-            if not is_ball and area < self.min_area:
-                continue
-            cls: ObjectClass = "ball" if is_ball else "player"
-
             # Score reports blob quality, not certainty: a crisp solid blob fills
             # its bounding box, a smeared or occluded one does not.
-            score = float(np.clip(0.1 + 0.9 * fill, 0.0, 1.0))
             out.append(
                 Detection(
                     frame=int(frame_idx),
@@ -225,8 +225,65 @@ class ColorDetector:
                     y1=float(y),
                     x2=float(x + bw),
                     y2=float(y + bh),
-                    score=score,
-                    cls=cls,
+                    score=float(np.clip(0.1 + 0.9 * fill, 0.0, 1.0)),
+                    cls="player",
+                )
+            )
+        return out
+
+    def _detect_ball(
+        self, hsv: np.ndarray, green: np.ndarray, objects: np.ndarray, frame_idx: int
+    ) -> list[Detection]:
+        """Find the ball among the object blobs: small, white, round, in open grass.
+
+        This runs on the same marking-suppressed mask as the players, which is a
+        deliberate choice and a costly one. That mask is built by an opening
+        wide enough to strip pitch markings, and the ball is not much thicker
+        than a marking, so the ball is often stripped with them. The result is
+        that the ball is found in a minority of frames.
+
+        The alternative was tried and is worse. Segmenting the ball off the raw
+        white mask by thickness — a distance-transform core grown back within
+        the mask — lifts detection from roughly one frame in seven to three in
+        four, but drags in a couple of dozen impostors per frame. Perspective is
+        why it cannot be cleaned up: a marking near the camera is genuinely
+        thicker than the ball at the far touchline, so no single core radius
+        separates them, and the leftovers are stubs of line that move about and
+        so survive the stationary-candidate filter downstream. Feeding those
+        through produced a ball roughly twenty metres from the truth. Sparse and
+        right beats dense and wrong, so the conservative mask stays until there
+        is a depth-aware threshold to replace it.
+        """
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(objects, 8)
+        sat = hsv[:, :, 1].astype(np.float64)
+        val = hsv[:, :, 2].astype(np.float64)
+
+        out: list[Detection] = []
+        for label in range(1, n_labels):
+            x, y, bw, bh, area = (int(v) for v in stats[label][:5])
+            if not (self.ball_min_area <= area <= self.ball_max_area) or bw == 0 or bh == 0:
+                continue
+            if max(bw / bh, bh / bw) > BALL_MAX_ASPECT:
+                continue
+            fill = area / float(bw * bh)
+            if fill < BALL_MIN_FILL:
+                continue
+            mask = labels[y : y + bh, x : x + bw] == label
+            if float(sat[y : y + bh, x : x + bw][mask].mean()) > BALL_MAX_SAT:
+                continue
+            if float(val[y : y + bh, x : x + bw][mask].mean()) < BALL_MIN_VAL:
+                continue
+            if not _in_open_grass(green, x, y, bw, bh):
+                continue
+            out.append(
+                Detection(
+                    frame=int(frame_idx),
+                    x1=float(x),
+                    y1=float(y),
+                    x2=float(x + bw),
+                    y2=float(y + bh),
+                    score=float(np.clip(0.1 + 0.9 * fill, 0.0, 1.0)),
+                    cls="ball",
                 )
             )
         return out

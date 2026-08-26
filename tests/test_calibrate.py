@@ -227,3 +227,73 @@ def test_metric_relative_delta_is_nan_against_a_zero_source():
 def test_non_finite_metric_never_passes():
     m = CalibrationMetric(name="x", sim=float("nan"), source=0.5, tolerance=10.0)
     assert not m.passed
+
+
+# --- what the report is allowed to claim ------------------------------------
+
+
+def _tracking(n_frames: int, *, ball_every: int) -> pd.DataFrame:
+    """A tiny canonical frame where the ball appears every `ball_every` frames."""
+    rows = []
+    for f in range(n_frames):
+        for team, base in (("home", 20.0), ("away", 80.0)):
+            for j in range(11):
+                rows.append(
+                    {
+                        "match_id": "t", "t": f / 10.0, "period": 1, "frame": f,
+                        "team": team, "player_id": f"{team}_{j}", "jersey": j + 1,
+                        "x": base + j, "y": 5.0 + 2 * j, "vx": 0.0, "vy": 0.0,
+                        "confidence": 1.0,
+                    }
+                )
+        if ball_every and f % ball_every == 0:
+            rows.append(
+                {
+                    "match_id": "t", "t": f / 10.0, "period": 1, "frame": f,
+                    "team": "ball", "player_id": "ball", "jersey": pd.NA,
+                    "x": 50.0, "y": 34.0, "vx": 0.0, "vy": 0.0, "confidence": 1.0,
+                }
+            )
+    return coerce_tracking_frame(pd.DataFrame(rows))
+
+
+def test_possession_is_not_scored_when_the_source_has_almost_no_ball():
+    # A tracker that rarely finds the ball yields an inferred rate of zero. That
+    # is missing data, not a fast or a slow simulator, and scoring it either way
+    # would be inventing a verdict.
+    sim = _tracking(100, ball_every=1)
+    source = _tracking(100, ball_every=50)  # 2% coverage
+    report = calibration_report(sim, source)
+    possession = next(m for m in report.metrics if m.name == "possession_loss_per_min")
+    assert not possession.measurable
+    assert possession.status == "n/a"
+    assert possession not in report.failures
+    assert "too few" in report.notes
+
+
+def test_possession_is_scored_when_the_source_does_show_the_ball():
+    sim = _tracking(100, ball_every=1)
+    source = _tracking(100, ball_every=1)
+    report = calibration_report(sim, source)
+    possession = next(m for m in report.metrics if m.name == "possession_loss_per_min")
+    assert possession.measurable
+    assert possession.status in {"PASS", "FAIL"}
+
+
+def test_an_unmeasurable_metric_cannot_fail_the_overall_verdict():
+    sim = _tracking(100, ball_every=1)
+    source = _tracking(100, ball_every=50)
+    report = calibration_report(sim, source)
+    assert report.unmeasured
+    assert report.passed == all(m.passed for m in report.metrics if m.measurable)
+
+
+def test_supplied_loss_rate_overrides_the_single_rollout_estimate():
+    # A ten-second rollout resolves the rate only to the nearest six per minute,
+    # so the driver's mean over every rollout is what should be judged.
+    sim = _tracking(100, ball_every=1)
+    source = _tracking(100, ball_every=1)
+    report = calibration_report(sim, source, sim_loss_rate_per_min=3.25, n_rollouts=32)
+    possession = next(m for m in report.metrics if m.name == "possession_loss_per_min")
+    assert possession.sim == pytest.approx(3.25)
+    assert "32 rollouts" in report.notes
