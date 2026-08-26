@@ -1,6 +1,6 @@
 [project]
 name = "replay"
-version = "0.1.0"
+version = "0.1.1"
 description = "Broadcast-to-tracking converter and tactical sandbox"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
