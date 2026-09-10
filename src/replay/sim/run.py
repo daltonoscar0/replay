@@ -192,7 +192,7 @@ def _resolve_frame(tracking: pd.DataFrame, scenario: Any) -> int:
     # a tracker needs a few frames to confirm anything, so the opening of a file
     # is exactly where the roster is thinnest and the ball most often missing.
     # Score each frame by whether it has a ball and how many players it has, and
-    # take the earliest of the best — earliest so the choice stays reproducible
+    # take the earliest of the best, earliest so the choice stays reproducible
     # and leaves the most footage ahead of the rollout.
     have_xy = tracking[np.isfinite(tracking["x"]) & np.isfinite(tracking["y"])]
     if have_xy.empty:

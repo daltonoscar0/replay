@@ -29,7 +29,7 @@ GREEN_UPPER = np.array([85, 255, 255], dtype=np.uint8)
 BALL_MAX_SAT = 90.0
 BALL_MIN_VAL = 140.0
 
-# Colour cannot separate the ball from white shorts or a pitch marking — all
+# Colour cannot separate the ball from white shorts or a pitch marking, all
 # three are the same white. Shape and context can. The ball is round, so it
 # fills its bounding box like a disc does, and it is the only white thing that
 # sits in open grass: shorts have a jersey above them and a marking fragment has

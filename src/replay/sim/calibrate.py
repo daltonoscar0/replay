@@ -428,7 +428,7 @@ def calibration_report(
     # Possession can only be inferred from a source that actually shows a ball.
     # Below the coverage floor the inferred sequence is almost all "loose", the
     # rate collapses to zero, and comparing against it would hand out a verdict
-    # the data cannot support — a confident PASS being every bit as wrong as a
+    # the data cannot support, a confident PASS being every bit as wrong as a
     # confident FAIL.
     # Count frames where the ball has a position, not rows labelled "ball". The
     # Metrica layout is a dense grid, so a round trip through it emits a ball

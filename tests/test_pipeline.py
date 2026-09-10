@@ -42,7 +42,7 @@ def moving(frames, x0=10.0, step=1.0, **kw):
 
 def test_stationary_ball_candidate_is_discarded_however_long_it_lives():
     # The original bug. A penalty spot never moves, so it tracks cleanly for the
-    # whole clip while the real ball fragments — and any rule that prefers the
+    # whole clip while the real ball fragments, and any rule that prefers the
     # longest-lived track picks the paint every time.
     by_track = {1: still(range(500)), 2: moving(range(20))}
     _resolve_ball(by_track, IDENTITY)

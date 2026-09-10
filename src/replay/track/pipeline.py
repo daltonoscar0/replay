@@ -314,7 +314,7 @@ def _resample_to_fps(
 #: How far a ball candidate must travel over its whole life, in meters, before
 #: it is believed. Penalty spots, the centre spot and goal-frame corners are
 #: white, round, and sit in open grass, so they pass every appearance test the
-#: detector can apply — but they do not move. On the demo clip the gap is stark:
+#: detector can apply, but they do not move. On the demo clip the gap is stark:
 #: marking tracks cover at most 0.7 m while real ball fragments cover 2.5 m or
 #: more, so anything in between is a safe place to draw the line.
 BALL_MIN_PATH_M = 1.5
