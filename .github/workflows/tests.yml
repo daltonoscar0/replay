@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # --locked installs exactly what uv.lock pins rather than re-resolving.
+      # One test is marked network; -m deselects it.
+      - name: Install
+        run: uv sync --locked
+
+      # Uses the demo/fixture data committed in the repo. Verified locally:
+      # 333 passed, 1 deselected.
+      - name: Run tests
+        run: uv run pytest -m "not network"

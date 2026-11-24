@@ -1,5 +1,7 @@
 # replay
 
+[![tests](https://github.com/daltonoscar0/replay/actions/workflows/tests.yml/badge.svg)](https://github.com/daltonoscar0/replay/actions/workflows/tests.yml)
+
 Broadcast video in, pitch-coordinate tracking out, plus a sandbox for asking
 what would have happened if the defensive line had been higher.
 
